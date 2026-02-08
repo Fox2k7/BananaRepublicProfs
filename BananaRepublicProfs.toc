@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: BananaRepublicProfs
+## Notes: Guild professions + recipe scanner + sharing + UI
+## Author: Banana Republic
+## Version: 0.6
+## SavedVariables: BRPDB
+
+BananaRepublicProfs.lua
