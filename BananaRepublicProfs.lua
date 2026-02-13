@@ -38,7 +38,7 @@ end
 local ADDON_NAME = "BananaRepublicProfs"
 local DB_NAME = "BRPDB"
 local PREFIX = "BRP0"
-local DEBUG = true  -- TEMPORARILY ON for debugging  -- Debug messages OFF by default (use /brp debug to enable)
+local DEBUG = false  -- Debug messages OFF by default (use /brp debug to enable)
 
 local tlen = table.getn
 local LastScannedProf = {}  -- Now per-character: LastScannedProf[charName] = profName
@@ -208,10 +208,20 @@ local function enqueueSend(chatType, payload)
 end
 
 SendThrottle:SetScript("OnUpdate", function()
+  this.elapsed = (this.elapsed or 0) + arg1
+  
+  -- Send one message every 0.1 seconds (100ms throttle)
+  if this.elapsed < 0.1 then
+    return
+  end
+  
+  this.elapsed = 0
+  
   if tlen(SendQueue) == 0 then
     SendThrottle:Hide()
     return
   end
+  
   local item = table.remove(SendQueue, 1)
   
   if SendAddonMessage then
@@ -254,16 +264,8 @@ BroadcastTimer:SetScript("OnUpdate", function()
     
     msg("📤 Sende: " .. job.charName .. " - " .. job.profName .. " (" .. remaining .. " verbleibend)")
     
-    -- Temporarily switch to this character's data
-    local db = ensureDB()
-    local oldMe = db.me
-    db.me = job.charData
-    
-    -- Broadcast this profession
-    BRP_BroadcastProfession(job.profName, job.charName)
-    
-    -- Restore
-    db.me = oldMe
+    -- Broadcast this profession with direct data
+    BRP_BroadcastProfession(job.profName, job.charName, job.profData)
   end
 end)
 
@@ -675,16 +677,29 @@ end
 -- -------------------------
 -- Broadcast
 -- -------------------------
-function BRP_BroadcastProfession(profName, characterName)
-  local db = ensureDB()
-  local entry = db.me.profs[profName]
-  if not entry then return end
+function BRP_BroadcastProfession(profName, characterName, profData)
+  -- profData is now passed directly instead of using db.me
+  if not profData then
+    -- Fallback: try to get from db.me (for backward compatibility)
+    local db = ensureDB()
+    profData = db.me.profs[profName]
+  end
+  
+  if not profData then 
+    debug("Keine Daten für " .. profName)
+    return 
+  end
 
   -- Use provided characterName or fall back to current player
   local p = characterName or playerName()
-  local rank = entry.rank or 0
-  local maxRank = entry.maxRank or 0
-  local recipes = entry.recipes or {}
+  local rank = profData.rank or 0
+  local maxRank = profData.maxRank or 0
+  local recipes = profData.recipes or {}
+
+  if tlen(recipes) == 0 then
+    debug("Keine Rezepte für " .. profName)
+    return
+  end
 
   local recipeData = {}
   for i = 1, tlen(recipes) do
@@ -717,11 +732,8 @@ function BRP_BroadcastProfession(profName, characterName)
   local buf = ""
   
   -- Calculate overhead: "C~PlayerName~ProfName~ChunkIndex~"
-  -- Example: "C~Luminarr~FirstAid~1~" = ~25 bytes overhead
   local overhead = string.len("C" .. SEP .. safe(p) .. SEP .. safe(profName) .. SEP .. "999" .. SEP)
-  local maxChunkSize = 250 - overhead  -- Leave 5 bytes safety margin (255 total limit)
-  
-  -- Chunk overhead debug removed for cleaner output
+  local maxChunkSize = 250 - overhead
   
   for i = 1, tlen(recipeData) do
     local line = recipeData[i] .. "\n"
@@ -764,44 +776,18 @@ local function broadcastAll()
   -- Clear existing queue
   BroadcastQueue = {}
   
-  local sentProfs = {}  -- Track duplicates
-  
-  -- STEP 1: Queue professions from ALL characters
-  if db.characters then
-    for charName, charData in pairs(db.characters) do
-      if type(charData) == "table" and charData.profs then
-        for profName, profData in pairs(charData.profs) do
-          if type(profData) == "table" and profData.recipes and tlen(profData.recipes) > 0 then
-            local key = charName .. ":" .. profName
-            if not sentProfs[key] then
-              table.insert(BroadcastQueue, {
-                charName = charName,
-                profName = profName,
-                charData = charData
-              })
-              sentProfs[key] = true
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- STEP 2: Queue professions from guild database
+  -- Send ALL professions from guild database (most up-to-date)
   if db.guild then
-    for guildPlayerName, playerData in pairs(db.guild) do
+    for playerName, playerData in pairs(db.guild) do
       if type(playerData) == "table" and playerData.profs then
         for profName, profData in pairs(playerData.profs) do
           if type(profData) == "table" and profData.recipes and tlen(profData.recipes) > 0 then
-            local key = guildPlayerName .. ":" .. profName
-            if not sentProfs[key] then
-              table.insert(BroadcastQueue, {
-                charName = guildPlayerName,
-                profName = profName,
-                charData = { profs = { [profName] = profData } }
-              })
-              sentProfs[key] = true
-            end
+            table.insert(BroadcastQueue, {
+              charName = playerName,
+              profName = profName,
+              profData = profData  -- Pass the actual profession data directly
+            })
+            debug("Queued: " .. playerName .. " - " .. profName .. " (" .. tlen(profData.recipes) .. " recipes)")
           end
         end
       end
@@ -900,7 +886,20 @@ local function handleAddonMessage(prefix, text, distrib, sender)
       local chunkIdx = tonumber(idxS)
       if chunkIdx then
         pend.chunks[chunkIdx] = chunk
-        debug("[RECEIVE] Chunk " .. chunkIdx .. "/" .. pend.total)
+        
+        -- Calculate total from highest chunk index if not set yet
+        if not pend.total or pend.total == 0 then
+          local maxIdx = 0
+          for idx, _ in pairs(pend.chunks) do
+            if idx > maxIdx then maxIdx = idx end
+          end
+          if maxIdx > 0 then
+            pend.total = maxIdx
+          end
+        end
+        
+        local totalStr = pend.total and pend.total > 0 and tostring(pend.total) or "?"
+        debug("[RECEIVE] Chunk " .. chunkIdx .. "/" .. totalStr .. " (" .. player .. " - " .. prof .. ")")
       end
     end
     return
