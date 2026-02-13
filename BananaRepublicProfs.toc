@@ -1,0 +1,10 @@
+## Interface: 11200
+## Title: BananaRepublicProfs
+## Notes: Guild professions + recipe scanner + sharing + UI + Minimap Button
+## Author: Luminarr / Tel'Abim
+## Version: 1.0.0
+## SavedVariables: BRPDB
+
+BananaRepublicProfs_RecipeMaps.lua
+BananaRepublicProfs.lua
+BananaRepublicProfs.xml
